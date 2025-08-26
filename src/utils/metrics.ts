@@ -5,12 +5,13 @@
 
 export interface RequestMetrics {
   timestamp: number;
-  model: 'gpt-5' | 'gpt-4o' | 'gpt-4-turbo' | 'gpt-4';
-  tokensRequested: number;
-  tokensUsed: number;
-  processingTime: number; // milliseconds
+  model: 'gpt-5' | 'gpt-4o' | 'gpt-4-turbo' | 'gpt-4' | 'chunked-hybrid';
+  tokensInput: number;
+  tokensOutput: number;
+  processingTimeMs: number; // milliseconds
   success: boolean;
-  error?: string;
+  errorType?: string;
+  chunked: boolean;
   chunkId?: string;
   chunkType?: string;
 }
@@ -382,6 +383,67 @@ export class MetricsCollector {
   }
   
   /**
+   * Record processing attempt (called when request starts)
+   */
+  recordProcessingAttempt(metrics: {
+    url: string;
+    contentSize: number;
+    imageCount: number;
+    estimatedTokens: number;
+    chunkedProcessing: boolean;
+    timestamp: number;
+  }): void {
+    this.processingMetrics.push({
+      timestamp: metrics.timestamp,
+      processingTimeMs: 0, // Will be updated on completion
+      contentSize: metrics.contentSize,
+      chunkedProcessing: metrics.chunkedProcessing,
+      success: false // Will be updated on completion
+    });
+  }
+  
+  /**
+   * Record processing completion (called when request ends)
+   */
+  recordProcessingCompletion(metrics: {
+    url: string;
+    success: boolean;
+    processingTimeMs: number;
+    chunkedProcessing: boolean;
+    imagePreservationRate: number;
+    finalContentSize: number;
+    errorType?: string;
+  }): void {
+    // Update the last processing metric entry
+    const lastProcessing = this.processingMetrics[this.processingMetrics.length - 1];
+    if (lastProcessing) {
+      lastProcessing.processingTimeMs = metrics.processingTimeMs;
+      lastProcessing.success = metrics.success;
+    }
+    
+    // Record request completion
+    this.recordRequest({
+      model: metrics.chunkedProcessing ? 'chunked-hybrid' : 'gpt-5',
+      tokensInput: 0, // Not easily available at completion
+      tokensOutput: 0,
+      processingTimeMs: metrics.processingTimeMs,
+      success: metrics.success,
+      errorType: metrics.errorType,
+      chunked: metrics.chunkedProcessing
+    });
+    
+    // Record image preservation if available
+    if (metrics.imagePreservationRate !== undefined) {
+      this.recordImagePreservation({
+        originalCount: 0, // Not available at this level
+        preservedCount: 0,
+        success: metrics.imagePreservationRate > 0.95, // 95% threshold for success
+        issues: metrics.success ? [] : ['Processing failed']
+      });
+    }
+  }
+  
+  /**
    * Get real-time dashboard data
    */
   getDashboardData(): {
@@ -486,11 +548,12 @@ export const MetricsUtils = {
    */
   recordSuccess(model: string, tokensUsed: number, processingTime: number, chunkId?: string): void {
     metricsCollector.recordRequest({
-      model: model as any,
-      tokensRequested: tokensUsed,
-      tokensUsed,
-      processingTime,
+      model: model as 'gpt-5' | 'gpt-4o' | 'gpt-4-turbo' | 'chunked-hybrid',
+      tokensInput: tokensUsed,
+      tokensOutput: 0,
+      processingTimeMs: processingTime,
       success: true,
+      chunked: false,
       chunkId
     });
   },
@@ -500,12 +563,13 @@ export const MetricsUtils = {
    */
   recordFailure(model: string, tokensRequested: number, error: string, chunkId?: string): void {
     metricsCollector.recordRequest({
-      model: model as any,
-      tokensRequested,
-      tokensUsed: 0,
-      processingTime: 0,
+      model: model as 'gpt-5' | 'gpt-4o' | 'gpt-4-turbo' | 'chunked-hybrid',
+      tokensInput: tokensRequested,
+      tokensOutput: 0,
+      processingTimeMs: 0,
       success: false,
-      error,
+      errorType: error,
+      chunked: false,
       chunkId
     });
   },
